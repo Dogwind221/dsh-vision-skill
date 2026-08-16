@@ -1,0 +1,16 @@
+# 凭据与敏感文件
+.env
+.env.*
+!.env.example
+*_token*
+secrets*
+
+# 生成产物
+output/
+generated-images/
+
+# 构建/系统
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
