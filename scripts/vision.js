@@ -25,6 +25,7 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const http = require("http");
+const { spawn } = require("child_process");
 
 function loadDotEnv(file) {
   try {
@@ -64,6 +65,15 @@ function buildProviders() {
             models: String(p.model || p.models || "").split(",").map((s) => s.trim()).filter(Boolean),
             base: p.base || "https://dashscope.aliyuncs.com/compatible-mode/v1",
           });
+        } else if (p && p.type === "cli" && p.cmd) {
+          list.push({
+            id: p.id || `cli${i + 1}`,
+            cli: true,
+            key: "cli",
+            cmd: p.cmd,
+            models: String(p.model || p.models || "Qwen3.8-Max").split(",").map((s) => s.trim()).filter(Boolean),
+            base: "cli",
+          });
         }
       }
     }
@@ -77,6 +87,19 @@ function buildProviders() {
   push("backup", ENV.VISION2_API_KEY || "", ENV.VISION2_MODEL || "", ENV.VISION2_BASE_URL || "");
   // 3) OpenAI 兼容
   push("openai", ENV.OPENAI_API_KEY || "", ENV.OPENAI_MODEL || "", ENV.OPENAI_BASE_URL || "");
+  // 4) CLI 供应商（如 QoderCN：spawn qoderclicn -p <prompt> --attachment <图片> -m <model>）
+  //    配置: VISION_PROVIDERS 里 {type:"cli", id, cmd, models}，或快捷环境变量:
+  //    VISION_CLI_CMD（命令，默认 qoderclicn）/ VISION_CLI_MODEL（模型，默认 Qwen3.8-Max）
+  if (ENV.VISION_CLI_CMD) {
+    list.push({
+      id: "cli",
+      cli: true,
+      key: "cli",
+      cmd: ENV.VISION_CLI_CMD,
+      models: String(ENV.VISION_CLI_MODEL || "Qwen3.8-Max").split(",").map((s) => s.trim()).filter(Boolean),
+      base: "cli",
+    });
+  }
   return list;
 }
 
@@ -180,6 +203,45 @@ function request(provider, model, payload) {
   });
 }
 
+/* ---------- CLI 供应商（QoderCN 等）：spawn 子进程识图 ---------- */
+const os = require("os");
+function resolveCliSpawn(cmd) {
+  // 默认 qoderclicn：优先 node + npm 全局 bundle（避免 Windows .cmd 包装的编码/转义问题）
+  if (cmd === "qoderclicn") {
+    const bundle = path.join(os.homedir(), "AppData", "Roaming", "npm", "node_modules", "@qodercn-ai", "qoderclicn", "bundle", "qoderclicn.js");
+    if (fs.existsSync(bundle)) return { cmd: process.execPath, args: [bundle], shell: false };
+  }
+  return { cmd, args: [], shell: process.platform === "win32" };
+}
+function requestCli(provider, model, imagePath, prompt) {
+  const cmd = provider.cmd || "qoderclicn";
+  const args = ["-p", prompt, "--attachment", imagePath, "-m", model, "--permission-mode", "dont_ask"];
+  const spawnCfg = resolveCliSpawn(cmd);
+  return new Promise((resolve, reject) => {
+    const child = spawn(spawnCfg.cmd, [...spawnCfg.args, ...args], { stdio: ["ignore", "pipe", "pipe"], shell: spawnCfg.shell });
+    let out = "", err = "";
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`CLI 超时(180s): ${cmd}`)); }, 180000);
+    child.stdout.on("data", (c) => (out += c));
+    child.stderr.on("data", (c) => (err += c));
+    child.on("error", (e) => { clearTimeout(timer); reject(new Error(`CLI 启动失败: ${e.message}`)); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(`CLI 退出码 ${code}: ${err.split("\n").slice(0, 3).join(" ")}`));
+      resolve(out.trim() || err.trim());
+    });
+  });
+}
+/** 统一调用：HTTP 供应商用 dataURL，CLI 供应商用本地文件路径。 */
+function ask(provider, model, imageUrl, imagePath, prompt) {
+  if (provider.cli) return requestCli(provider, model, imagePath, prompt);
+  return request(provider, model, {
+    model,
+    messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: imageUrl } }, { type: "text", text: prompt }] }],
+    stream: false,
+    max_tokens: 2048,
+  });
+}
+
 /* ---------- 主流程 ---------- */
 async function main() {
   const a = parseArgs();
@@ -188,7 +250,9 @@ async function main() {
 
   if (a.listProviders) {
     const out = {
-      providers: providers.map((p) => ({ id: p.id, configured: !!p.key, key: p.key ? mask(p.key) : "", base: p.base, models: p.models })),
+      providers: providers.map((p) => p.cli
+        ? { id: p.id, cli: true, cmd: p.cmd, models: p.models }
+        : { id: p.id, configured: !!p.key, key: p.key ? mask(p.key) : "", base: p.base, models: p.models }),
       schemas: Object.keys(SCHEMAS),
     };
     console.log(JSON.stringify(out, null, 2));
@@ -228,6 +292,8 @@ async function main() {
   let imageUrl;
   try { imageUrl = resolveImageUrl(a.imageSource, a.isUrl); }
   catch (e) { console.error("识图失败:", e.message); process.exit(1); }
+  // CLI 供应商需要本地文件路径（qoderclicn --attachment）
+  const imagePath = a.isUrl ? a.imageSource : path.resolve(a.imageSource);
 
   const attempts = [];
   const warnings = [];
@@ -241,12 +307,7 @@ async function main() {
       const attempt = { provider: provider.id, model, ok: false };
       attempts.push(attempt);
       try {
-        let raw = await request(provider, model, {
-          model,
-          messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: imageUrl } }, { type: "text", text: prompt }] }],
-          stream: false,
-          max_tokens: 2048,
-        });
+        let raw = await ask(provider, model, imageUrl, imagePath, prompt);
         // 结构化契约：解析 + 校验，结构损坏则重试（同模型最多 2 次）
         if (schema) {
           let parsed = null;
@@ -260,12 +321,7 @@ async function main() {
             attempt.ok = false;
             if (attempts.filter((x) => x.provider === provider.id && x.model === model).length < 2) {
               warnings.push(`${provider.id}/${model}: 输出结构损坏，重试一次`);
-              const raw2 = await request(provider, model, {
-                model,
-                messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: imageUrl } }, { type: "text", text: prompt + "\n（上次输出不是合法 JSON，请务必只输出 JSON）" }] }],
-                stream: false,
-                max_tokens: 2048,
-              });
+              const raw2 = await ask(provider, model, imageUrl, imagePath, prompt + "\n（上次输出不是合法 JSON，请务必只输出 JSON）");
               const cleaned2 = String(raw2).replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
               try { parsed = JSON.parse(cleaned2); } catch {}
               const err2 = validateResult(schema, parsed);
@@ -275,6 +331,7 @@ async function main() {
             }
           }
           if (parsed && !parsed.meta) parsed.meta = {};
+          attempt.ok = true;
           parsed.meta.model = model;
           parsed.meta.provider = provider.id;
           parsed.meta.attempts = attempts.map((x) => ({ provider: x.provider, model: x.model, ok: x.ok, error: x.error || undefined }));
