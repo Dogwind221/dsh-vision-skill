@@ -100,6 +100,25 @@ function buildProviders() {
       base: "cli",
     });
   }
+  // 5) Codex CLI 骨架（规划能力：复用 ChatGPT 订阅的视觉模型识图，免 API key）
+  //    仅当 ~/.codex/auth.json 含有效 token（已登录）才注册；未登录自动跳过，零副作用。
+  try {
+    const authFile = path.join(os.homedir(), ".codex", "auth.json");
+    if (fs.existsSync(authFile)) {
+      const authText = fs.readFileSync(authFile, "utf8");
+      if (/"access_token"\s*:\s*"[^"]{20,}"/.test(authText) || /"refresh_token"\s*:\s*"[^"]{20,}"/.test(authText)) {
+        list.push({
+          id: "codex-cli",
+          cli: true,
+          cliKind: "codex",
+          key: "cli",
+          cmd: "codex",
+          models: ["gpt-4o"],
+          base: "cli",
+        });
+      }
+    }
+  } catch {}
   return list;
 }
 
@@ -215,6 +234,30 @@ function resolveCliSpawn(cmd) {
 }
 function requestCli(provider, model, imagePath, prompt) {
   const cmd = provider.cmd || "qoderclicn";
+  // Codex 模式：codex exec --image <图> + stdin prompt（复用 ChatGPT 订阅的视觉模型，免 key）
+  if (provider.cliKind === "codex") {
+    const args = ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never", "--image", imagePath, "-"];
+    return new Promise((resolve, reject) => {
+      const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32" });
+      let out = "", err = "";
+      const timer = setTimeout(() => { child.kill(); reject(new Error(`CLI 超时(180s): codex`)); }, 180000);
+      child.stdout.on("data", (c) => (out += c));
+      child.stderr.on("data", (c) => (err += c));
+      child.on("error", (e) => { clearTimeout(timer); reject(new Error(`codex 启动失败: ${e.message}`)); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) return reject(new Error(`codex 退出码 ${code}: ${err.split("\n").slice(0, 3).join(" ")}`));
+        // --json 输出含 assistant_text；失败时回退原始输出
+        try {
+          const parsed = JSON.parse(out.trim());
+          const text = parsed?.assistant_text || parsed?.text || parsed?.result;
+          resolve(String(text || out).trim());
+        } catch { resolve(out.trim() || err.trim()); }
+      });
+      child.stdin.write(prompt);
+      child.stdin.end();
+    });
+  }
   const args = ["-p", prompt, "--attachment", imagePath, "-m", model, "--permission-mode", "dont_ask"];
   const spawnCfg = resolveCliSpawn(cmd);
   return new Promise((resolve, reject) => {

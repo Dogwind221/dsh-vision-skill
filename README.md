@@ -22,7 +22,7 @@
 | **形态** | dsh 原生插件（npm 包 + 工具注入 + 模型变体）| 零依赖单文件 `vision.js`，纯 Node 内置模块，任意 harness 即拷即用 |
 | **供应商策略** | 复用本机已有登录态池（Claude Code/Codex/OpenCode/Pi）| **显式模型链**：DashScope 6 模型按性能+最新排序自动降级 → VISION2_* → OpenAI 兼容 → **Qoder CLI**，优先级可精确控制 |
 | **输出契约** | 通用证据型 JSON（OCR 转录/版面/实体关系）| **三种领域 schema**（img2img 生图 / ecom 电商 / ground 主体定位）+ 输出校验自动重试，直接喂下游生图/电商 |
-| **零 key 识图** | 需本机已有视觉模型登录态，或配 Gemini key / Antigravity CLI | **CLI 供应商**：spawn QoderCN 账号识图，**零 API key**，绕过欠费/配额 |
+| **零 key 识图** | 需本机已有视觉模型登录态，或配 Gemini key / Antigravity CLI | **Qoder CLI**：spawn QoderCN 账号识图，**零 API key**，绕过欠费/配额；**多端 CLI 复用为规划能力**——已预留 codex-cli 骨架（检测到 `~/.codex/auth.json` 登录态自动启用，复用 ChatGPT 订阅视觉模型），未登录自动隐藏，零副作用 |
 | **生态集成** | 独立插件 | img2img-studio 的 **L1 识图层**、file-intake 统一路由、dsh-vision-config 面板（多 key 三级优先级/开关/**欠费自动关停**探测）|
 | **可观测性** | 结果标注额度来源 | `meta.attempts` 记录每次尝试的 provider/model/error/warnings，失败如实报告绝不编造 |
 | **语言场景** | 英文为主 | **中文契约**（中文 prompt schema + 中文文档），识别欠费错误码（Arrearage / FreeTierOnly）自动提示 |
