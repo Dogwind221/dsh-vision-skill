@@ -60,3 +60,13 @@ MIT
 - 识图结果是模型生成，可能有幻觉，关键判断请复核
 - 识别失败会自动降级供应商/模型；全部失败如实报告并输出尝试记录
 - 本 skill 常与 [img2img-studio](https://github.com/Dogwind221/img2img-studio) 配合作为其 L1 识图层
+
+## 核心优点
+
+- **零依赖纯 Node**：单文件 `vision.js`，仅用内置模块，任何环境直接跑，无安装门槛
+- **多供应商自动降级链**：DashScope 模型链（6 个，性能+最新优先）→ 备用 VISION2_* → OpenAI 兼容 → **Qoder CLI**；主链全挂自动切换，`meta.attempts` 完整记录每次尝试
+- **结构化 JSON 契约**：`--schema img2img / ecom / ground` 强制输出 schema，**输出校验 + 自动重试**，下游直接消费，杜绝幻觉 JSON
+- **CLI 供应商架构**：支持 spawn 外部 CLI（QoderCN）识图——**零 API key 也能识图**（Qoder 账号额度），绕过欠费/配额限制
+- **guard 判定**：先探测配置可用性再决定是否走脚本，避免无效调用；`--list-providers` 不泄露密钥
+- **AUTO-TRIGGER**：拖图/贴图/URL 自动识别；本地路径 / Web 附件（attachmentId）/ URL 全支持
+- **可观测**：每次识别带 `meta.provider/model/attempts/warnings`；失败如实告知，绝不编造图片内容
