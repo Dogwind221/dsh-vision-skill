@@ -7,11 +7,34 @@ description: Give vision capability to text-only models in DeepSeek Harness. AUT
 
 **核心原则：web 端拖入/粘贴图片 = 自动识别。** 用户在 DeepSeek Harness web GUI 里直接丢一张图（不带任何文字），本技能就要自动加载并识别——**不要等用户打字**，识别完直接回复图片内容。
 
+## ⚠️ 多模态分流（先判定，再选路）
+
+识别图片**之前必须先判定当前会话模型是否支持图像输入**，两条路只走一条：
+
+| 当前模型 | 识别方式 |
+|---|---|
+| **多模态**（支持图像输入，如 `deepseek-v4-flash-vision-exp`、`deepseek-v4-pro`、外接的 vision/vl/multimodal 模型） | **直接用 DSH 原生 `read_image` 工具**（模型自己看图），**屏蔽本识别链**——不调用 `vision.js`/识图 API，不浪费外部额度 |
+| **纯文本**（flash / pro 等 text-only，如 `deepseek-v4-flash`、`deepseek-v4-pro`） | 走下方「识别链」（`vision.js` 多模型降级 + 备用供应商） |
+
+**权威判定方法（推荐，自动适配外接模型）**：
+1. 先调用 `read_image` 工具读图；
+2. 成功 → 当前模型原生多模态，直接用工具返回的图像识别，**不要**再走识别链（省额度、免延迟）；
+3. 失败（报错含 `does not declare image input` / `switch to an image-capable model` 等）→ 当前模型是纯文本，转入本技能识别链。
+
+**快速判定名单**（可跳过探测直接选路，减少一次失败轮次；名单随模型新增更新）：
+- 多模态：`deepseek-v4-flash-vision-exp`、`deepseek-v4-pro`、`qwen-vl-*`、`glm-4v*`、`gpt-4o*`、`claude-*`、任何含 `vision`/`vl`/`multimodal` 的模型 id
+- 纯文本：`deepseek-v4-flash`、`deepseek-v4-pro`（text-only 版）、`glm-4.5*`（未标 image 时）…
+
+> 规则：**外接多模态模型只需在 DSH 模型配置标了 `inputModalities: [text, image]`，`read_image` 自动可用，识别链自动屏蔽**——本名单只是快判优化，不是必需。
+> `read_image` 工具报错文本即模型能力来源（DSH 按模型配置判定），判断以工具实际结果为准。
+
 ## 自动触发场景（命中任一即执行）
 
 1. 用户消息带**图片附件**：会话里出现 image block / `attachmentId`（形如 `sha256:<hex>`）、"Saved attachments:"、或 Web 端上传的图片引用
 2. 用户给出图片**本地路径**或**网络 URL**（即使没说明意图）
 3. 用户要求分析/描述/识别图片内容
+
+> 多模态模型下触发后直接 `read_image`；纯文本模型下触发后进入下方识别链。
 
 ## 识别图片附件（web 端拖入的图）
 
@@ -66,8 +89,8 @@ node "C:\Users\ASUS\.agents\skills\dsh-vision-skill\scripts\vision.js" --url "<�
 - **结构化输出（推荐，ModLens 式契约）**：给下游生图/电商用时加 `--schema`，脚本强制 JSON 契约 + 输出校验，结构损坏自动重试：
   - `--schema img2img`（生图用：summary / subject / composition / visual(hex 主色) / semantics / ocr，含 meta.attempts 尝试记录）
   - `--schema ecom`（电商商品：product_name / key_features 等）
-- **guard 判定**：`node vision.js guard` 检查供应商可用性并给出「是否必须走脚本」的判定（DSH 默认模型无原生视觉，图片一律走脚本）
+- **guard 判定**：`node vision.js guard` 检查供应商可用性并给出「是否必须走脚本」的判定（**纯文本模型**无原生视觉，图片一律走脚本；多模态模型不走脚本）
 - **`--list-providers`**：查看已配置供应商（不泄露密钥）
-- 不要用 Read 工具假装读取图片内容，也不要声称模型"能看到"——纯文本模型必须走本脚本
+- **不要用 Read 工具假装读取图片内容，也不要声称模型"能看到"**——纯文本模型必须走本脚本；多模态模型用 `read_image` 工具（模型原生视觉，不走脚本、不耗识别链额度）
 - 识别失败（配额/网络）时，脚本自动降级模型→备用供应商；全部失败输出尝试记录并如实告知
 - 识别结果可能有幻觉，涉及关键判断时提示用户复核
